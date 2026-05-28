@@ -1,8 +1,8 @@
 """
 Bias detection test runner.
 
-Loads prompts from test_prompts/bias_prompts.json, sends each one to Claude,
-then uses a second Claude call to analyze the response for gender/racial bias
+Loads prompts from test_prompts/bias_prompts.json, sends each one to Gemini,
+then uses a second Gemini call to analyze the response for gender/racial bias
 and stereotyping. Results are saved to results/bias_results.json.
 """
 
@@ -12,7 +12,8 @@ import time
 import datetime
 from pathlib import Path
 
-import anthropic
+import google.generativeai as genai
+from google.api_core import exceptions as google_exceptions
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
@@ -28,7 +29,7 @@ PROMPTS_FILE = BASE_DIR / "tests" / "test_prompts" / "bias_prompts.json"
 RESULTS_FILE = BASE_DIR / "results" / "bias_results.json"
 
 # ── model ─────────────────────────────────────────────────────────────────────
-MODEL = "claude-haiku-4-5"
+MODEL = "gemini-2.0-flash"
 
 # ── system prompts ────────────────────────────────────────────────────────────
 NEUTRAL_SYSTEM = (
@@ -57,13 +58,14 @@ bias_score guide:
 
 
 class BiasTester:
-    """Runs all bias test prompts against Claude and scores each response."""
+    """Runs all bias test prompts against Gemini and scores each response."""
 
     def __init__(self):
-        api_key = os.getenv("ANTHROPIC_API_KEY")
+        api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            raise EnvironmentError("ANTHROPIC_API_KEY not set in environment.")
-        self.client = anthropic.Anthropic(api_key=api_key)
+            raise EnvironmentError("GOOGLE_API_KEY not set in environment.")
+        # Configure the Gemini SDK globally with the API key
+        genai.configure(api_key=api_key)
         self.delay = float(os.getenv("TEST_DELAY_SECONDS", "1"))
         self.max_retries = int(os.getenv("MAX_RETRIES", "3"))
         self.prompts = self._load_prompts()
@@ -76,22 +78,23 @@ class BiasTester:
 
     # ── API helpers ───────────────────────────────────────────────────────────
 
-    def _call_claude(self, system: str, user_message: str) -> str:
-        """Send a single message to Claude with retry/backoff logic."""
+    def _call_gemini(self, system: str, user_message: str) -> str:
+        """Send a single message to Gemini with retry/backoff logic."""
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = self.client.messages.create(
-                    model=MODEL,
-                    max_tokens=1024,
-                    system=system,
-                    messages=[{"role": "user", "content": user_message}],
+                # Each call creates a model instance with the given system instruction
+                model = genai.GenerativeModel(
+                    model_name=MODEL,
+                    system_instruction=system,
                 )
-                return response.content[0].text
-            except anthropic.RateLimitError:
+                response = model.generate_content(user_message)
+                return response.text
+            except google_exceptions.ResourceExhausted:
+                # 429 quota / rate-limit exceeded
                 wait = 2 ** attempt
                 console.print(f"[yellow]Rate limit — waiting {wait}s (attempt {attempt}/{self.max_retries})[/yellow]")
                 time.sleep(wait)
-            except anthropic.APIError as exc:
+            except Exception as exc:
                 console.print(f"[red]API error on attempt {attempt}: {exc}[/red]")
                 if attempt == self.max_retries:
                     raise
@@ -99,7 +102,7 @@ class BiasTester:
         raise RuntimeError("Max retries exceeded.")
 
     def _analyze_response(self, prompt_data: dict, ai_response: str) -> dict:
-        """Ask Claude to score the AI response for bias."""
+        """Ask Gemini to score the AI response for bias."""
         what_to_detect = ", ".join(prompt_data.get("what_to_detect", []))
         analyzer_prompt = (
             f"Original prompt sent to the AI:\n{prompt_data['prompt']}\n\n"
@@ -108,7 +111,7 @@ class BiasTester:
             f"Bias types to specifically check for: {what_to_detect}\n\n"
             "Analyze this response and return your JSON bias evaluation."
         )
-        raw = self._call_claude(BIAS_ANALYZER_SYSTEM, analyzer_prompt)
+        raw = self._call_gemini(BIAS_ANALYZER_SYSTEM, analyzer_prompt)
         raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
 
         try:
@@ -148,7 +151,7 @@ class BiasTester:
 
                 # Step 1: get AI response
                 try:
-                    ai_response = self._call_claude(NEUTRAL_SYSTEM, prompt_data["prompt"])
+                    ai_response = self._call_gemini(NEUTRAL_SYSTEM, prompt_data["prompt"])
                 except Exception as exc:
                     ai_response = f"[ERROR] {exc}"
 

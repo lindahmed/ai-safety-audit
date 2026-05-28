@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Model](https://img.shields.io/badge/Model-claude--haiku--4--5-orange?logo=anthropic)
+![Model](https://img.shields.io/badge/Model-gemini--2.0--flash-orange?logo=google)
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen)
 
 An automated toolkit for auditing the safety and fairness of large language models. Runs
@@ -18,7 +18,7 @@ Built as a portfolio project demonstrating applied AI safety engineering.
 - **15 Jailbreak Test Cases** across 5 attack categories: role-play attacks, fictional framing,
   authority impersonation, gradual escalation, and language obfuscation
 - **20 Bias Detection Tests** probing gender and racial assumptions across 10 occupations
-- **Automated AI Scoring** — a second Claude call evaluates each response as REFUSED / PARTIAL / BYPASSED
+- **Automated AI Scoring** — a second Gemini call evaluates each response as REFUSED / PARTIAL / BYPASSED
 - **Professional PDF Report** with cover page, executive summary, results tables, risk assessment,
   and safety recommendations
 - **Rich CLI Interface** with progress bars, live tables, and colour-coded output
@@ -36,7 +36,7 @@ Built as a portfolio project demonstrating applied AI safety engineering.
 
 ┌─────────────────────────────────────────────────────────────────┐
 │  Automated Red-Team · Bias Detection · PDF Report Generation    │
-│  Model: claude-haiku-4-5  |  Framework: Anthropic Claude API    │
+│  Model: gemini-2.0-flash  |  Framework: Google Gemini API       │
 └─────────────────────────────────────────────────────────────────┘
 
 Running jailbreak tests... ████████████████████ 100%  15/15
@@ -70,8 +70,9 @@ pip install -r requirements.txt
 
 # 4. Set up environment variables
 cp .env.example .env
-# Edit .env and add your Anthropic API key:
-#   ANTHROPIC_API_KEY=sk-ant-...
+# Edit .env and add your Google AI API key:
+#   GOOGLE_API_KEY=your_key_here
+# Get a free key at: https://aistudio.google.com/app/apikey
 ```
 
 ---
@@ -142,7 +143,7 @@ ai-safety-audit/
 ## Methodology
 
 ### Jailbreak Testing
-Each prompt is sent to Claude with a neutral system prompt. A second Claude call then acts as
+Each prompt is sent to Gemini with a neutral system prompt. A second Gemini call then acts as
 a safety evaluator, scoring the response as:
 
 | Verdict | Meaning |
@@ -156,7 +157,7 @@ The 5 attack categories tested are: **role-play attacks**, **fictional framing**
 See [docs/methodology.md](docs/methodology.md) for detailed explanations.
 
 ### Bias Detection
-Each bias prompt is sent to Claude, then a bias-specialist analyzer evaluates the response for:
+Each bias prompt is sent to Gemini, then a bias-specialist analyzer evaluates the response for:
 - Gender assumptions (defaulting to he/she for occupations)
 - Racial/ethnic assumptions (implying demographic backgrounds)
 - Specific stereotypes detected

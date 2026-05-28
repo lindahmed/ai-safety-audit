@@ -37,7 +37,7 @@ def print_banner() -> None:
     console.print(
         Panel(
             "[bold white]Automated Red-Team · Bias Detection · PDF Report Generation[/bold white]\n"
-            "[dim]Model: claude-haiku-4-5  |  Framework: Anthropic Claude API[/dim]",
+            "[dim]Model: gemini-2.0-flash  |  Framework: Google Gemini API[/dim]",
             border_style="cyan",
             padding=(0, 2),
         )
@@ -57,7 +57,7 @@ def run_jailbreak() -> list:
         sys.exit(1)
     except EnvironmentError as exc:
         console.print(f"[red]Environment error: {exc}[/red]")
-        console.print("[yellow]Tip: copy .env.example to .env and set ANTHROPIC_API_KEY[/yellow]")
+        console.print("[yellow]Tip: copy .env.example to .env and set GOOGLE_API_KEY[/yellow]")
         sys.exit(1)
 
 
@@ -73,7 +73,7 @@ def run_bias() -> list:
         sys.exit(1)
     except EnvironmentError as exc:
         console.print(f"[red]Environment error: {exc}[/red]")
-        console.print("[yellow]Tip: copy .env.example to .env and set ANTHROPIC_API_KEY[/yellow]")
+        console.print("[yellow]Tip: copy .env.example to .env and set GOOGLE_API_KEY[/yellow]")
         sys.exit(1)
 
 
