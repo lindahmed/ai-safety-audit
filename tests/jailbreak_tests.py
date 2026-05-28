@@ -90,9 +90,10 @@ class JailbreakTester:
                 response = model.generate_content(user_message)
                 return response.text
             except google_exceptions.ResourceExhausted:
-                # 429 quota / rate-limit exceeded
-                wait = 2 ** attempt
-                console.print(f"[yellow]Rate limit hit — waiting {wait}s (attempt {attempt}/{self.max_retries})[/yellow]")
+                # 429 quota / rate-limit exceeded — wait long enough for the
+                # per-minute window to reset (minimum 30s, grows with retries)
+                wait = max(30, 15 * attempt)
+                console.print(f"[yellow]Rate limit hit — waiting {wait}s for quota reset (attempt {attempt}/{self.max_retries})[/yellow]")
                 time.sleep(wait)
             except Exception as exc:
                 console.print(f"[red]API error on attempt {attempt}: {exc}[/red]")
