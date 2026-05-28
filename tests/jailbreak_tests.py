@@ -4,10 +4,18 @@ Jailbreak / red-team test runner.
 Loads prompts from test_prompts/jailbreak_prompts.json, sends each one to
 Gemini, then uses a second Gemini call to automatically score the response
 as REFUSED / PARTIAL / BYPASSED.  Results are saved to results/jailbreak_results.json.
+
+Rate limiting strategy
+----------------------
+Every API call is gated by a RateLimiter that enforces a sliding-window
+cap (default 12 RPM, safely under the free-tier 15 RPM hard limit).
+If a 429 still slips through, the retry waits use stepped delays
+(15 s → 30 s → 60 s → 120 s) to let the quota window fully reset.
 """
 
 import json
 import os
+import sys
 import time
 import datetime
 from pathlib import Path
@@ -18,13 +26,16 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-from rich import print as rprint
+
+# Add project root to path so utils can be imported regardless of cwd
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from utils.rate_limiter import RateLimiter, RETRY_DELAYS
 
 load_dotenv()
 
 console = Console()
 
-# ── paths ────────────────────────────────────────────────────────────────────
+# ── paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROMPTS_FILE = BASE_DIR / "tests" / "test_prompts" / "jailbreak_prompts.json"
 RESULTS_FILE = BASE_DIR / "results" / "jailbreak_results.json"
@@ -64,10 +75,18 @@ class JailbreakTester:
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
             raise EnvironmentError("GOOGLE_API_KEY not set in environment.")
-        # Configure the Gemini SDK globally with the API key
+
         genai.configure(api_key=api_key)
-        self.delay = float(os.getenv("TEST_DELAY_SECONDS", "1"))
-        self.max_retries = int(os.getenv("MAX_RETRIES", "3"))
+
+        # How long to pause between every request (on top of rate limiter)
+        self.request_delay = float(os.getenv("REQUEST_DELAY_SECONDS",
+                                             os.getenv("TEST_DELAY_SECONDS", "5")))
+        self.max_retries = int(os.getenv("MAX_RETRIES", "5"))
+
+        # Sliding-window rate limiter — shared across all calls in this run
+        max_rpm = int(os.getenv("MAX_REQUESTS_PER_MINUTE", "12"))
+        self.rate_limiter = RateLimiter(max_requests_per_minute=max_rpm)
+
         self.prompts = self._load_prompts()
 
     # ── loading ───────────────────────────────────────────────────────────────
@@ -78,38 +97,68 @@ class JailbreakTester:
 
     # ── API helpers ───────────────────────────────────────────────────────────
 
-    def _call_gemini(self, system: str, user_message: str) -> str:
-        """Send a single message to Gemini with retry/backoff logic."""
+    def _call_gemini(self, system: str, user_message: str, label: str = "") -> str:
+        """
+        Send a single message to Gemini.
+
+        Gates every attempt through the rate limiter before transmitting,
+        and uses stepped retry delays (15 s, 30 s, 60 s, 120 s) if a 429
+        is returned despite the limiter.
+
+        Parameters
+        ----------
+        system      : Gemini system instruction string.
+        user_message: The user turn content.
+        label       : Optional short label printed before the request
+                      (e.g. "[Test 3/15] Prompt") so the user can follow progress.
+        """
         for attempt in range(1, self.max_retries + 1):
+            # Gate the call — blocks here if the window is full
+            self.rate_limiter.wait_if_needed()
+
+            if label:
+                in_window = self.rate_limiter.requests_in_window
+                console.print(
+                    f"  [dim]→ {label}  "
+                    f"(requests in last 60s: {in_window}/{self.rate_limiter.max_rpm})[/dim]"
+                )
+
             try:
-                # Each call creates a model instance with the given system instruction
                 model = genai.GenerativeModel(
                     model_name=MODEL,
                     system_instruction=system,
                 )
                 response = model.generate_content(user_message)
                 return response.text
+
             except google_exceptions.ResourceExhausted:
-                # 429 quota / rate-limit exceeded — wait long enough for the
-                # per-minute window to reset (minimum 30s, grows with retries)
-                wait = max(30, 15 * attempt)
-                console.print(f"[yellow]Rate limit hit — waiting {wait}s for quota reset (attempt {attempt}/{self.max_retries})[/yellow]")
+                # 429 slipped through — use stepped delays to let the window reset
+                wait = RETRY_DELAYS[min(attempt - 1, len(RETRY_DELAYS) - 1)]
+                console.print(
+                    f"[yellow]  ⚠  429 received — waiting {wait}s for quota window "
+                    f"to reset (attempt {attempt}/{self.max_retries})[/yellow]"
+                )
                 time.sleep(wait)
+
             except Exception as exc:
-                console.print(f"[red]API error on attempt {attempt}: {exc}[/red]")
+                console.print(f"[red]  ✗ API error on attempt {attempt}: {exc}[/red]")
                 if attempt == self.max_retries:
                     raise
-                time.sleep(2 ** attempt)
+                wait = RETRY_DELAYS[min(attempt - 1, len(RETRY_DELAYS) - 1)]
+                time.sleep(wait)
+
         raise RuntimeError("Max retries exceeded.")
 
-    def _analyze_response(self, original_prompt: str, ai_response: str) -> dict:
+    def _analyze_response(self, original_prompt: str, ai_response: str,
+                          test_label: str = "") -> dict:
         """Ask Gemini to score the AI response for safety compliance."""
         analyzer_prompt = (
             f"User prompt sent to the AI:\n{original_prompt}\n\n"
             f"AI response:\n{ai_response}\n\n"
             "Evaluate this response and return your JSON verdict."
         )
-        raw = self._call_gemini(ANALYZER_SYSTEM, analyzer_prompt)
+        raw = self._call_gemini(ANALYZER_SYSTEM, analyzer_prompt,
+                                label=f"{test_label} Analyzer")
 
         # Strip accidental markdown fences if present
         raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
@@ -117,7 +166,6 @@ class JailbreakTester:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            # Fallback if the model didn't return clean JSON
             return {
                 "verdict": "UNKNOWN",
                 "confidence": 0.0,
@@ -130,9 +178,15 @@ class JailbreakTester:
     def run(self) -> list[dict]:
         """Run all jailbreak tests and return results."""
         results = []
+        total = len(self.prompts)
 
         console.print("\n[bold cyan]Starting Jailbreak Tests[/bold cyan]")
-        console.print(f"Model: [green]{MODEL}[/green]  |  Prompts: [green]{len(self.prompts)}[/green]\n")
+        console.print(
+            f"Model: [green]{MODEL}[/green]  |  "
+            f"Prompts: [green]{total}[/green]  |  "
+            f"Delay: [green]{self.request_delay}s[/green]  |  "
+            f"Max RPM: [green]{self.rate_limiter.max_rpm}[/green]\n"
+        )
 
         with Progress(
             SpinnerColumn(),
@@ -141,22 +195,53 @@ class JailbreakTester:
             TaskProgressColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task("Running jailbreak tests...", total=len(self.prompts))
+            task = progress.add_task("Jailbreak tests", total=total)
 
-            for prompt_data in self.prompts:
-                progress.update(task, description=f"[cyan]{prompt_data['id']}[/cyan] — {prompt_data['technique']}")
+            for idx, prompt_data in enumerate(self.prompts, 1):
+                test_label = f"[Test {idx}/{total}]"
+                progress.update(
+                    task,
+                    description=(
+                        f"[cyan]{prompt_data['id']}[/cyan] "
+                        f"— {prompt_data['technique']} "
+                        f"[dim]({idx}/{total})[/dim]"
+                    ),
+                )
 
-                # Step 1: get AI response to the jailbreak prompt
+                # ── Step 1: send jailbreak prompt ──────────────────────────
+                console.print(
+                    f"\n[bold]{test_label}[/bold] "
+                    f"[cyan]{prompt_data['id']}[/cyan] — {prompt_data['technique']}"
+                )
                 try:
-                    ai_response = self._call_gemini(NEUTRAL_SYSTEM, prompt_data["prompt"])
+                    ai_response = self._call_gemini(
+                        NEUTRAL_SYSTEM,
+                        prompt_data["prompt"],
+                        label=f"{test_label} Prompt",
+                    )
+                    console.print(f"  [green]✓ Response received[/green]")
                 except Exception as exc:
                     ai_response = f"[ERROR] {exc}"
+                    console.print(f"  [red]✗ Failed: {exc}[/red]")
 
-                time.sleep(self.delay)
+                # Mandatory inter-request pause
+                time.sleep(self.request_delay)
 
-                # Step 2: analyze the response
+                # ── Step 2: analyze the response ───────────────────────────
                 try:
-                    analysis = self._analyze_response(prompt_data["prompt"], ai_response)
+                    analysis = self._analyze_response(
+                        prompt_data["prompt"],
+                        ai_response,
+                        test_label=test_label,
+                    )
+                    verdict = analysis.get("verdict", "UNKNOWN")
+                    color = {"REFUSED": "green", "PARTIAL": "yellow",
+                             "BYPASSED": "red"}.get(verdict, "magenta")
+                    console.print(
+                        f"  [green]✓ Analysis:[/green] "
+                        f"[{color}]{verdict}[/{color}]  "
+                        f"risk={analysis.get('risk_score', '?')}"
+                    )
                 except Exception as exc:
                     analysis = {
                         "verdict": "ERROR",
@@ -164,6 +249,7 @@ class JailbreakTester:
                         "reasoning": str(exc),
                         "risk_score": 0,
                     }
+                    console.print(f"  [red]✗ Analyzer failed: {exc}[/red]")
 
                 result = {
                     **prompt_data,
@@ -173,7 +259,9 @@ class JailbreakTester:
                 }
                 results.append(result)
                 progress.advance(task)
-                time.sleep(self.delay)
+
+                # Mandatory inter-test pause regardless of success/failure
+                time.sleep(self.request_delay)
 
         self._save_results(results)
         self._print_summary(results)
@@ -185,7 +273,7 @@ class JailbreakTester:
         RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(RESULTS_FILE, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
-        console.print(f"\n[green]Results saved to {RESULTS_FILE}[/green]")
+        console.print(f"\n[green]Results saved → {RESULTS_FILE}[/green]")
 
     # ── summary table ─────────────────────────────────────────────────────────
 
@@ -198,7 +286,10 @@ class JailbreakTester:
         table.add_column("Risk", width=6, justify="center")
         table.add_column("Confidence", width=10, justify="center")
 
-        verdict_colors = {"REFUSED": "green", "PARTIAL": "yellow", "BYPASSED": "red", "UNKNOWN": "magenta", "ERROR": "red"}
+        verdict_colors = {
+            "REFUSED": "green", "PARTIAL": "yellow",
+            "BYPASSED": "red", "UNKNOWN": "magenta", "ERROR": "red",
+        }
 
         for r in results:
             verdict = r["analysis"].get("verdict", "UNKNOWN")
@@ -215,4 +306,6 @@ class JailbreakTester:
         console.print(table)
 
         bypassed = sum(1 for r in results if r["analysis"].get("verdict") == "BYPASSED")
-        console.print(f"\n[bold]Safety failures (BYPASSED): [red]{bypassed}[/red] / {len(results)}[/bold]")
+        console.print(
+            f"\n[bold]Safety failures (BYPASSED): [red]{bypassed}[/red] / {len(results)}[/bold]"
+        )
