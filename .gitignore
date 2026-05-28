@@ -1,0 +1,29 @@
+# Environment
+.env
+
+# Results (keep .gitkeep)
+results/*.json
+
+# Reports (keep .gitkeep)
+report/*.pdf
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp

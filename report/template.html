@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Safety & Bias Audit Report</title>
+  <style>
+    /* ── reset & base ─────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      color: #1e1e1e;
+      background: #f9f9f9;
+      line-height: 1.6;
+    }
+    a { color: #1a5276; }
+
+    /* ── cover ────────────────────────────────────────────────────────────── */
+    .cover {
+      background: linear-gradient(135deg, #1a5276, #2874a6);
+      color: white;
+      text-align: center;
+      padding: 80px 40px 60px;
+    }
+    .cover h1 { font-size: 2.4rem; font-weight: 700; margin-bottom: 12px; }
+    .cover .subtitle { font-size: 1rem; opacity: 0.85; margin-bottom: 32px; }
+    .cover .meta { font-size: 0.85rem; opacity: 0.7; }
+    .metrics-row {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      flex-wrap: wrap;
+      margin-top: 40px;
+    }
+    .metric-box {
+      background: rgba(255,255,255,0.12);
+      border-radius: 8px;
+      padding: 16px 28px;
+      min-width: 120px;
+    }
+    .metric-box .value { font-size: 2rem; font-weight: 700; }
+    .metric-box .label { font-size: 0.75rem; opacity: 0.8; margin-top: 4px; }
+
+    /* ── layout ───────────────────────────────────────────────────────────── */
+    .container { max-width: 960px; margin: 0 auto; padding: 40px 24px; }
+
+    /* ── section titles ───────────────────────────────────────────────────── */
+    .section-title {
+      background: #1a5276;
+      color: white;
+      padding: 10px 16px;
+      border-radius: 4px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin: 36px 0 16px;
+    }
+    h3 {
+      color: #2874a6;
+      font-size: 1rem;
+      margin: 20px 0 8px;
+    }
+    p { margin-bottom: 10px; }
+
+    /* ── tables ───────────────────────────────────────────────────────────── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      margin-bottom: 24px;
+    }
+    thead th {
+      background: #2874a6;
+      color: white;
+      padding: 8px 10px;
+      text-align: left;
+      font-weight: 600;
+    }
+    tbody tr:nth-child(even) { background: #f0f4f8; }
+    tbody td { padding: 7px 10px; border-bottom: 1px solid #ddd; }
+
+    /* ── verdict badges ───────────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+    .badge-refused  { background: #d4efdf; color: #1e8449; }
+    .badge-partial  { background: #fef9e7; color: #b7950b; }
+    .badge-bypassed { background: #fadbd8; color: #c0392b; }
+    .badge-yes      { background: #fadbd8; color: #c0392b; }
+    .badge-no       { background: #d4efdf; color: #1e8449; }
+
+    /* ── metric table ─────────────────────────────────────────────────────── */
+    .metric-table { width: auto; }
+    .metric-table td:first-child { font-weight: 600; padding-right: 24px; }
+
+    /* ── risk rating ──────────────────────────────────────────────────────── */
+    .risk-high   { color: #c0392b; font-weight: 700; font-size: 1.3rem; }
+    .risk-medium { color: #b7950b; font-weight: 700; font-size: 1.3rem; }
+    .risk-low    { color: #1e8449; font-weight: 700; font-size: 1.3rem; }
+
+    /* ── footer ───────────────────────────────────────────────────────────── */
+    footer {
+      text-align: center;
+      font-size: 0.8rem;
+      color: #888;
+      margin-top: 60px;
+      padding: 24px;
+      border-top: 1px solid #ddd;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Cover ──────────────────────────────────────────────────────────────── -->
+<div class="cover">
+  <h1>AI Safety &amp; Bias Audit Report</h1>
+  <p class="subtitle">Automated Red-Team &amp; Bias Detection — claude-haiku-4-5</p>
+  <p class="meta">Generated: {{ generated_at }}</p>
+
+  <div class="metrics-row">
+    <div class="metric-box">
+      <div class="value">{{ jb_total }}</div>
+      <div class="label">Jailbreak Tests</div>
+    </div>
+    <div class="metric-box">
+      <div class="value">{{ jb_bypassed }}</div>
+      <div class="label">Safety Failures</div>
+    </div>
+    <div class="metric-box">
+      <div class="value">{{ bias_total }}</div>
+      <div class="label">Bias Tests</div>
+    </div>
+    <div class="metric-box">
+      <div class="value">{{ "%.1f"|format(avg_bias_score) }}</div>
+      <div class="label">Avg Bias Score</div>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- ── Executive Summary ──────────────────────────────────────────────── -->
+  <div class="section-title">1. Executive Summary</div>
+  <p>
+    This report summarises the results of an automated AI safety audit conducted against
+    the Anthropic Claude claude-haiku-4-5 model. Two test suites were run: a jailbreak suite
+    probing safety guardrails, and a bias detection suite identifying demographic assumptions.
+  </p>
+
+  <h3>Key Metrics</h3>
+  <table class="metric-table">
+    <tr><td>Total Tests</td><td>{{ jb_total + bias_total }}</td></tr>
+    <tr><td>Jailbreak Bypass Rate</td><td>{{ "%.1f"|format(jb_bypass_rate) }}%</td></tr>
+    <tr><td>Most Vulnerable Category</td><td>{{ most_vulnerable_category }}</td></tr>
+    <tr><td>Average Bias Score</td><td>{{ "%.2f"|format(avg_bias_score) }} / 10</td></tr>
+    <tr><td>Gender Assumptions</td><td>{{ gender_bias_count }}</td></tr>
+    <tr><td>Racial Assumptions</td><td>{{ racial_bias_count }}</td></tr>
+  </table>
+
+  <h3>Overall Risk Rating</h3>
+  <p class="risk-{{ overall_risk|lower }}">{{ overall_risk }}</p>
+
+  <!-- ── Jailbreak Results ───────────────────────────────────────────────── -->
+  <div class="section-title">2. Jailbreak / Red-Team Results</div>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th><th>Category</th><th>Technique</th>
+        <th>Expected</th><th>Verdict</th><th>Risk</th><th>Confidence</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in jb_results %}
+      <tr>
+        <td>{{ r.id }}</td>
+        <td>{{ r.category }}</td>
+        <td>{{ r.technique }}</td>
+        <td>{{ r.expected_behavior }}</td>
+        <td>
+          <span class="badge badge-{{ r.analysis.verdict|lower }}">
+            {{ r.analysis.verdict }}
+          </span>
+        </td>
+        <td>{{ r.analysis.risk_score }}</td>
+        <td>{{ "%.0f"|format(r.analysis.confidence * 100) }}%</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- ── Bias Results ───────────────────────────────────────────────────── -->
+  <div class="section-title">3. Bias Detection Results</div>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th><th>Category</th><th>Occupation</th>
+        <th>Gender Bias</th><th>Racial Bias</th><th>Score</th><th>Stereotypes</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in bias_results %}
+      <tr>
+        <td>{{ r.id }}</td>
+        <td>{{ r.category }}</td>
+        <td>{{ r.occupation }}</td>
+        <td>
+          <span class="badge badge-{{ 'yes' if r.analysis.gender_assumption_detected else 'no' }}">
+            {{ 'YES' if r.analysis.gender_assumption_detected else 'NO' }}
+          </span>
+        </td>
+        <td>
+          <span class="badge badge-{{ 'yes' if r.analysis.racial_assumption_detected else 'no' }}">
+            {{ 'YES' if r.analysis.racial_assumption_detected else 'NO' }}
+          </span>
+        </td>
+        <td>{{ r.analysis.bias_score }}</td>
+        <td>{{ r.analysis.stereotypes_detected | join(', ') or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- ── Safety Framework ───────────────────────────────────────────────── -->
+  <div class="section-title">4. Safety Framework Recommendations</div>
+  <h3>Layer 1: Input Filtering</h3>
+  <p>Keyword and semantic scanning at the ingress layer to flag known attack patterns before they reach the model. Per-user rate limiting to deter automated probing.</p>
+  <h3>Layer 2: Model-Level Guardrails</h3>
+  <p>Strengthened system prompts, constitutional AI techniques, and RLHF fine-tuning to embed safety at the model level.</p>
+  <h3>Layer 3: Output Monitoring</h3>
+  <p>Real-time classifier on all outputs to detect safety failures. Flagged outputs logged for human review.</p>
+  <h3>Layer 4: Bias Mitigation</h3>
+  <p>Regular fairness benchmarking, demographic parity checks, and targeted prompt engineering.</p>
+
+</div>
+
+<footer>
+  AI Safety &amp; Bias Audit Report &mdash; Generated {{ generated_at }} &mdash; AI Safety Audit Toolkit
+</footer>
+
+</body>
+</html>
